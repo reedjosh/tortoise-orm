@@ -60,6 +60,8 @@ class OracleQueryBuilder(QueryBuilder):  # type: ignore
         super(OracleQueryBuilder, self).__init__(dialect=Dialects.ORACLE, **kwargs)
 
     def get_sql(self, *args, **kwargs):
+        if 'groupby_alias' in kwargs:
+            del kwargs['groupby_alias']
         return super(OracleQueryBuilder, self).get_sql(*args, groupby_alias=False, **kwargs)
 
     def _limit_sql(self):
@@ -92,7 +94,7 @@ class AioodbcDBClient(BaseDBAsyncClient):
     query_class = OracleQuery
     executor_class = AioodbcExecutor
     schema_generator = AioodbcSchemaGenerator
-    capabilities = Capabilities("oracle", supports_transactions=False)
+    capabilitie = Capabilities("oracle", supports_transactions=False)
 
     def __init__(
         self, user: str, password: str, database: str, host: str, port: SupportsInt, **kwargs: Any,
@@ -137,7 +139,13 @@ class AioodbcDBClient(BaseDBAsyncClient):
 
         try:
             self._pool = await aioodbc.create_pool(
-                loop=None, **self._template, after_created=conn_attributes, autocommit=True
+                loop=None,
+                **self._template,
+                after_created=conn_attributes,
+                autocommit=True,
+                pool_recycle=60,
+                minsize=self.pool_minsize,
+                maxsize=self.pool_maxsize
             )
             self.log.debug("Created connection pool %s with params: %s", self._pool, self._template)
         except pyodbc.Error as exc:
@@ -162,9 +170,6 @@ class AioodbcDBClient(BaseDBAsyncClient):
         self._template.clear()
 
     async def db_create(self) -> None:
-        print("12341234" * 1000)
-        print("building db")
-        print("12341234" * 1000)
         conn_str = "Driver={OracleODBC-12c};DBQ=localhost:1539/XE;Uid=sys;Pwd=pass123 as sysdba"
         conn = await aioodbc.connect(dsn=conn_str)
         create = f'CREATE PLUGGABLE DATABASE "{self.database}" ADMIN USER {self.user} IDENTIFIED by {self.password};'
@@ -189,9 +194,6 @@ class AioodbcDBClient(BaseDBAsyncClient):
         await conn.close()
 
     async def db_delete(self) -> None:
-        print("12341234" * 1000)
-        print("dropping db")
-        print("12341234" * 1000)
         conn_str = "Driver={OracleODBC-12c};DBQ=localhost:1539/XE;Uid=sys;Pwd=pass123 as sysdba"
         conn = await aioodbc.connect(dsn=conn_str)
         close = f'ALTER PLUGGABLE DATABASE "{self.database}" close immediate;'
@@ -234,9 +236,6 @@ class AioodbcDBClient(BaseDBAsyncClient):
         # and store it in the table. From there have the OracleQueryBuilder build inserts with
         # currval already requested.
 
-        print("#" * 15, "exe insert", "#" * 15)
-        print(query, values)
-        print("#" * 30)
 
         # Parse table from query. (INSERT INTO "TABLE"...)
         table = query.split()[2].replace('"', "'")
@@ -278,11 +277,11 @@ class AioodbcDBClient(BaseDBAsyncClient):
     ) -> Tuple[int, List[dict]]:
         async with self.acquire_connection() as connection:
             self.log.debug("%s: %s", query, values)
+            schema_string = f"ALTER SESSION set current_schema={self.schema}"
+            if self.schema:
+                await connection.execute(schema_string)
             async with connection.cursor() as crsr:
                 params = [item for item in [query, values] if item]
-                print("#" * 15, "exe query", "#" * 15)
-                print(query)
-                print("#" * 30)
                 await crsr.execute(*params)
                 if "UPDATE" in query:
                     return 1, []
@@ -290,7 +289,7 @@ class AioodbcDBClient(BaseDBAsyncClient):
                     return 1, []
                 rows = await crsr.fetchall()
                 if rows:
-                    fields = [f[0].lower() for f in crsr.description]
+                    fields = [f[0] for f in crsr.description]
                     return crsr.rowcount, [dict(zip(fields, row)) for row in rows]
                 return crsr.rowcount, []
 
@@ -305,9 +304,6 @@ class AioodbcDBClient(BaseDBAsyncClient):
         #    query = query + ';'
         async with self.acquire_connection() as connection:
             async with connection.cursor() as crsr:
-                # print('#'*15, 'exe script', '#'*15)
-                # print(query)
-                # print('#'*30)
                 self.log.debug(query)
                 await crsr.execute(query)
 
